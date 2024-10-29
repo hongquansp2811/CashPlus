@@ -1,0 +1,1148 @@
+﻿using System;
+using System.Linq;
+using LOYALTY.Interfaces;
+using LOYALTY.DataObjects.Request;
+using LOYALTY.DataObjects.Response;
+using LOYALTY.Extensions;
+using LOYALTY.Helpers;
+using LOYALTY.Data;
+using LOYALTY.Models;
+
+namespace LOYALTY.DataAccess
+{
+    public class AppPartnerAccumulatePointOrderDataAccess : IPartnerAccumulatePointOrder
+    {
+        private readonly LOYALTYContext _context;
+        private readonly ICommonFunction _commonFunction;
+        public AppPartnerAccumulatePointOrderDataAccess(LOYALTYContext context, ICommonFunction commonFunction)
+        {
+            this._context = context;
+            _commonFunction = commonFunction;
+        }
+
+
+        public APIResponse getCustomerDetailByQR(Guid id)
+        {
+            var data = (from p in _context.Customers
+                        where p.id == id
+                        select new
+                        {
+                            id = p.id,
+                            full_name = p.full_name,
+                            phone = p.phone
+                        }).FirstOrDefault();
+            if (data == null)
+            {
+                return new APIResponse("ERROR_ID_NOT_EXISTS");
+            }
+            return new APIResponse(data);
+        }
+
+        public APIResponse getList(AccumulatePointOrderRequest request)
+        {
+            // Default page_no, page_size
+            if (request.page_size < 1)
+            {
+                request.page_size = Consts.PAGE_SIZE;
+            }
+
+            if (request.page_no < 1)
+            {
+                request.page_no = 1;
+            }
+            // Số lượng Skip
+            int skipElements = (request.page_no - 1) * request.page_size;
+
+            var lstData = (from p in _context.AccumulatePointOrders
+                           join s in _context.Partners on p.partner_id equals s.id
+                           join st in _context.OtherLists on p.status equals st.id into sts
+                           from st in sts.DefaultIfEmpty()
+                           where p.partner_id == request.partner_id
+                           orderby p.date_created descending
+                           select new
+                           {
+                               id = p.id,
+                               trans_no = p.trans_no,
+                               trans_date = p.date_created,
+                               trans_date_origin = p.date_created,
+                               partner_name = s.name,
+                               bill_amount = p.bill_amount,
+                               point_exchange = p.point_partner,
+                               description = p.description,
+                               approve_user = p.approve_user,
+                               status = p.status,
+                               status_name = st != null ? st.name : ""
+                           });
+
+            if (request.status != null)
+            {
+                lstData = lstData.Where(x => x.status == request.status);
+            }
+
+            if (request.from_date != null && request.from_date.Length == 10)
+            {
+                lstData = lstData.Where(x => x.trans_date_origin >= _commonFunction.convertStringSortToDate(request.from_date));
+            }
+
+            if (request.to_date != null && request.to_date.Length == 10)
+            {
+                lstData = lstData.Where(x => x.trans_date_origin <= _commonFunction.convertStringSortToDate(request.to_date));
+            }
+            // Đếm số lượng
+            int countElements = lstData.Count();
+
+            // Số lượng trang
+            int totalPage = countElements > 0
+                    ? (int)Math.Ceiling(countElements / (double)request.page_size)
+                    : 0;
+
+            // Data Sau phân trang
+            var dataList = lstData.Take(request.page_size * request.page_no).Skip(skipElements).ToList();
+            var dataResult = new DataListResponse { page_no = request.page_no, page_size = request.page_size, total_elements = countElements, total_page = totalPage, data = dataList };
+            return new APIResponse(dataResult);
+        }
+
+        public APIResponse getDetail(Guid id)
+        {
+            var data = (from p in _context.AccumulatePointOrders
+                        join s in _context.Partners on p.partner_id equals s.id
+                        join st in _context.OtherLists on p.status equals st.id into sts
+                        from st in sts.DefaultIfEmpty()
+                        where p.id == id
+                        select new
+                        {
+                            id = p.id,
+                            trans_no = p.trans_no,
+                            trans_date = p.date_created,
+                            partner_name = s.name,
+                            customer_id = p.customer_id,
+                            bill_amount = p.bill_amount,
+                            point_exchange = p.point_partner,
+                            description = p.description,
+                            approve_user = p.approve_user,
+                            status = p.status,
+                            status_name = st != null ? st.name : ""
+                        }).FirstOrDefault();
+            if (data == null)
+            {
+                return new APIResponse("ERROR_ID_NOT_EXISTS");
+            }
+            return new APIResponse(data);
+        }
+
+        public APIResponse confirm(Guid id, string username)
+        {
+
+            var request = _context.AccumulatePointOrders.Where(x => x.id == id).FirstOrDefault();
+
+            if (request == null)
+            {
+                return new APIResponse("ERROR_ORDER_ID_NOT_EXISTS");
+            }
+
+            var dateNow = DateTime.Now;
+
+            if (request.date_created.Value.AddMinutes(5) <= dateNow)
+            {
+                return new APIResponse("ERROR_ORDER_EXPIRE");
+            }
+
+            if (request.customer_id == null)
+            {
+                return new APIResponse("ERROR_CUSTOMER_ID_MISSING");
+            }
+
+            if (request.partner_id == null)
+            {
+                return new APIResponse("ERROR_PARTNER_ID_MISSING");
+            }
+
+            if (request.bill_amount == null)
+            {
+                return new APIResponse("ERROR_BILL_AMOUNT_MISSING");
+            }
+
+            var partnerObj = _context.Partners.Where(x => x.id == request.partner_id).FirstOrDefault();
+
+            if (partnerObj == null)
+            {
+                return new APIResponse("ERROR_PARTNER_ID_NOT_EXISTS");
+            }
+
+            if (partnerObj.status != 1)
+            {
+                return new APIResponse("ERROR_PARTNER_ID_NOT_AVAIABLE");
+            }
+
+            var userPartner = _context.Users.Where(x => x.is_partner == true && x.is_partner_admin == true && x.partner_id == request.partner_id).FirstOrDefault();
+
+            if (userPartner == null)
+            {
+                return new APIResponse("ERROR_USER_PARTNER_NOT_EXISTS");
+            }
+
+            var contractObj = _context.PartnerContracts.Where(x => x.status == 12 && x.from_date <= dateNow && x.to_date >= dateNow && x.partner_id == request.partner_id).FirstOrDefault();
+            if (contractObj == null)
+            {
+                return new APIResponse("ERROR_CONTRACT_NOT_EXISTS");
+            }
+
+            var settingObj = _context.Settingses.FirstOrDefault();
+
+            if (settingObj == null || settingObj.point_exchange == null || settingObj.point_value == null)
+            {
+                return new APIResponse("ERROR_SETTINGS_NOT_CONFIG");
+            }
+
+            var customerObj = _context.Customers.Where(x => x.id == request.customer_id).FirstOrDefault();
+            if (customerObj == null)
+            {
+                return new APIResponse("ERROR_CUSTOMER_NOT_EXISTS");
+            }
+
+            var userCustomer = _context.Users.Where(x => x.is_customer == true && x.customer_id == request.customer_id).FirstOrDefault();
+            if (userCustomer == null)
+            {
+                return new APIResponse("ERROR_USER_CUSTOMER_NOT_EXISTS");
+            }
+
+            decimal pointExchangeRate = Math.Round(((decimal)settingObj.point_exchange / (decimal)settingObj.point_value), 2);
+            decimal customerExchange = 0;
+            decimal affiliateExchange = 0;
+            decimal systemExchange = 0;
+            // Lấy cấu hình đổi điểm hiệu lực
+            var accumulateConfig = _context.AccumulatePointConfigs.Where(x => x.code == null && x.from_date <= dateNow && x.to_date >= dateNow && x.partner_id == request.partner_id && x.active == true).FirstOrDefault();
+
+            // Nếu không có riêng thì lấy chung
+            if (accumulateConfig == null)
+            {
+                accumulateConfig = _context.AccumulatePointConfigs.Where(x => x.code == "GENERAL").FirstOrDefault();
+            }
+
+            if (accumulateConfig == null)
+            {
+                return new APIResponse("ERROR_ACCUMULATE_CONFIG_NOT_SETTING");
+            }
+
+            var listAccuDetails = _context.AccumulatePointConfigDetails.Where(x => x.accumulate_point_config_id == accumulateConfig.id).ToList();
+
+            if (listAccuDetails.Count == 0)
+            {
+                return new APIResponse("ERROR_ACCUMULATE_CONFIG_NOT_SETTING");
+            }
+
+            for (int i = 0; i < listAccuDetails.Count; i++)
+            {
+                if (listAccuDetails[i].allocation_name == "Khách hàng")
+                {
+                    customerExchange = (decimal)listAccuDetails[i].discount_rate;
+                }
+                else if (listAccuDetails[i].allocation_name == "Affiliate")
+                {
+                    affiliateExchange = (decimal)listAccuDetails[i].discount_rate;
+                }
+                else if (listAccuDetails[i].allocation_name == "Hệ thống")
+                {
+                    systemExchange = (decimal)listAccuDetails[i].discount_rate;
+                }
+            }
+
+            //// Lấy cấu hình affiliate hiệu lực
+            //var affiliateConfig = _context.AffiliateConfigs.Where(x => x.code == null && x.from_date <= dateNow && x.to_date >= dateNow && x.service_type_id == partnerObj.service_type_id && x.active == true).FirstOrDefault();
+
+            //// Nếu không có riêng thì lấy chung
+            //if (affiliateConfig == null)
+            //{
+            //    affiliateConfig = _context.AffiliateConfigs.Where(x => x.code == "GENERAL").FirstOrDefault();
+            //}
+
+            //if (affiliateConfig == null)
+            //{
+            //    return new APIResponse("ERROR_AFFILIATE_CONFIG_NOT_SETTING");
+            //}
+
+            //var listAffiDetails = _context.AffiliateConfigDetails.Where(x => x.affiliate_config_id == affiliateConfig.id).ToList();
+
+            //if (listAffiDetails.Count == 0)
+            //{
+            //    return new APIResponse("ERROR_AFFILIATE_CONFIG_NOT_SETTING");
+            //}
+
+            //decimal affliateLv1 = 0;
+            //decimal affliateLv2 = 0;
+            //decimal affliateLv3 = 0;
+            //for (int i = 0; i < listAffiDetails.Count; i++)
+            //{
+            //    if (listAffiDetails[i].levels == 1)
+            //    {
+            //        affliateLv1 = (decimal)listAffiDetails[i].discount_rate;
+            //    }
+            //    else if (listAffiDetails[i].levels == 2)
+            //    {
+            //        affliateLv2 = (decimal)listAffiDetails[i].discount_rate;
+            //    }
+            //    else if (listAffiDetails[i].levels == 3)
+            //    {
+            //        affliateLv3 = (decimal)listAffiDetails[i].discount_rate;
+            //    }
+            //}
+
+            decimal total_point = Math.Round((decimal)request.bill_amount * (decimal)contractObj.discount_rate * pointExchangeRate / 100);
+
+            bool isDebit = false;
+
+            // Khóa tài khoản khi không đủ điểm tích cho khách hàng, vượt quả mức cảnh báo
+            if (userPartner.point_avaiable < total_point)
+            {
+                if (contractObj.warning_estimate + (userPartner.point_avaiable - total_point) < 0)
+                {
+                    userPartner.is_violation = true;
+                    _context.SaveChanges();
+                    //return new APIResponse("ERROR_PARTNER_POINT_NOT_ENOUGH");
+                }
+
+                isDebit = true;
+            }
+
+            decimal pointCustomer = Math.Round(total_point * customerExchange / 100);
+            decimal pointAffiliate = Math.Round(total_point * affiliateExchange / 100);
+            var transaction = _context.Database.BeginTransaction();
+
+            try
+            {
+
+                // Trừ điểm cửa hàng
+                userPartner.point_avaiable = userPartner.point_avaiable - total_point;
+                userPartner.total_point = userPartner.point_avaiable + userPartner.point_waiting + userPartner.point_affiliate;
+                _context.SaveChanges();
+
+                var newPartnerPointHistory = new PartnerPointHistory();
+                newPartnerPointHistory.id = Guid.NewGuid();
+                newPartnerPointHistory.order_type = "PULL";
+                newPartnerPointHistory.partner_id = request.partner_id;
+                newPartnerPointHistory.point_amount = total_point;
+                newPartnerPointHistory.status = 4;
+                newPartnerPointHistory.trans_date = DateTime.Now;
+                if (isDebit == true)
+                {
+                    newPartnerPointHistory.point_type = "WAITING";
+                }
+                else
+                {
+                    newPartnerPointHistory.point_type = "AVAIABLE";
+                }
+                _context.PartnerPointHistorys.Add(newPartnerPointHistory);
+                _context.SaveChanges();
+
+
+                // Cộng điểm khách hàng
+                var newCustomerPointHistory = new CustomerPointHistory();
+                newCustomerPointHistory.id = Guid.NewGuid();
+                newCustomerPointHistory.order_type = "PUSH";
+                newCustomerPointHistory.customer_id = request.customer_id;
+                newCustomerPointHistory.point_amount = pointCustomer;
+                newCustomerPointHistory.status = 4;
+                newCustomerPointHistory.trans_date = DateTime.Now;
+
+                if (isDebit == true)
+                {
+                    userCustomer.point_waiting += pointCustomer;
+                    newCustomerPointHistory.point_type = "WAITING";
+                }
+                else
+                {
+                    userCustomer.point_avaiable += pointCustomer;
+                    newCustomerPointHistory.point_type = "AVAIABLE";
+                }
+                _context.CustomerPointHistorys.Add(newCustomerPointHistory);
+
+                userCustomer.total_point = userCustomer.point_affiliate + userCustomer.point_avaiable + userCustomer.point_waiting;
+                _context.SaveChanges();
+
+                // Xử lý điểm Affiliate
+                decimal pointAffiliateLv1 = pointAffiliate;
+                //decimal pointAffiliateLv2 = Math.Round(pointAffiliate * affliateLv2 / 100);
+                //decimal pointAffiliateLv3 = Math.Round(pointAffiliate * affliateLv3 / 100);
+                decimal pointSystemAffiliate = pointAffiliate;
+                string usernameLv1 = "";
+                //string usernameLv2 = "";
+                //string usernameLv3 = "";
+                // Level 1
+                if (pointAffiliateLv1 >= 0 && userCustomer.share_person_id != null)
+                {
+                    var userLv1 = _context.Users.Where(x => x.id == userCustomer.share_person_id).FirstOrDefault();
+
+                    if (userLv1 != null && userLv1.is_delete == false && userLv1.status == 1)
+                    {
+                        usernameLv1 = userLv1.username;
+                        userLv1.point_affiliate += pointAffiliateLv1;
+                        userLv1.total_point = userLv1.point_affiliate + userLv1.point_avaiable + userLv1.point_waiting;
+
+                        if (userLv1.is_customer == true)
+                        {
+                            var newCustomerPointHistoryLv1 = new CustomerPointHistory();
+                            newCustomerPointHistoryLv1.id = Guid.NewGuid();
+                            newCustomerPointHistoryLv1.order_type = "AFF_LV_1";
+                            newCustomerPointHistoryLv1.customer_id = userLv1.customer_id;
+                            newCustomerPointHistoryLv1.source_id = request.customer_id;
+                            newCustomerPointHistoryLv1.point_amount = pointAffiliateLv1;
+                            newCustomerPointHistoryLv1.status = 4;
+                            newCustomerPointHistoryLv1.trans_date = DateTime.Now;
+                            newCustomerPointHistoryLv1.point_type = "WAITING";
+                            _context.CustomerPointHistorys.Add(newCustomerPointHistoryLv1);
+                        }
+                        else if (userLv1.is_partner == true)
+                        {
+                            var newPartnerPointHistoryLv1 = new PartnerPointHistory();
+                            newPartnerPointHistoryLv1.id = Guid.NewGuid();
+                            newPartnerPointHistoryLv1.order_type = "AFF_LV_1";
+                            newPartnerPointHistoryLv1.partner_id = userLv1.partner_id;
+                            newPartnerPointHistoryLv1.source_id = request.customer_id;
+                            newPartnerPointHistoryLv1.point_amount = pointAffiliateLv1;
+                            newPartnerPointHistoryLv1.status = 4;
+                            newPartnerPointHistoryLv1.trans_date = DateTime.Now;
+                            newPartnerPointHistoryLv1.point_type = "WAITING";
+                            _context.PartnerPointHistorys.Add(newPartnerPointHistoryLv1);
+                        }
+
+
+                        _context.SaveChanges();
+
+                        pointSystemAffiliate -= pointAffiliateLv1;
+                    }
+
+                    //if (pointAffiliateLv2 >= 0 && userLv1.share_person_id != null)
+                    //{
+                    //    var userLv2 = _context.Users.Where(x => x.id == userLv1.share_person_id).FirstOrDefault();
+
+                    //    if (userLv2 != null && userLv2.is_delete == false && userLv2.status == 1)
+                    //    {
+                    //        usernameLv2 = userLv2.username;
+                    //        userLv2.point_affiliate += pointAffiliateLv2;
+                    //        userLv2.total_point = userLv2.point_affiliate + userLv2.point_avaiable + userLv2.point_waiting;
+
+                    //        if (userLv2.is_customer == true)
+                    //        {
+                    //            var newCustomerPointHistoryLv21 = new CustomerPointHistory();
+                    //            newCustomerPointHistoryLv21.id = Guid.NewGuid();
+                    //            newCustomerPointHistoryLv21.order_type = "AFF_LV_2";
+                    //            newCustomerPointHistoryLv21.customer_id = userLv2.customer_id;
+                    //            newCustomerPointHistoryLv21.source_id = request.customer_id;
+                    //            newCustomerPointHistoryLv21.point_amount = pointAffiliateLv2;
+                    //            newCustomerPointHistoryLv21.status = 4;
+                    //            newCustomerPointHistoryLv21.trans_date = DateTime.Now;
+                    //            newCustomerPointHistoryLv21.point_type = "WAITING";
+                    //            _context.CustomerPointHistorys.Add(newCustomerPointHistoryLv21);
+                    //        }
+                    //        else if (userLv2.is_partner == true)
+                    //        {
+                    //            var newPartnerPointHistoryLv2 = new PartnerPointHistory();
+                    //            newPartnerPointHistoryLv2.id = Guid.NewGuid();
+                    //            newPartnerPointHistoryLv2.order_type = "AFF_LV_2";
+                    //            newPartnerPointHistoryLv2.partner_id = userLv2.partner_id;
+                    //            newPartnerPointHistoryLv2.source_id = request.customer_id;
+                    //            newPartnerPointHistoryLv2.point_amount = pointAffiliateLv2;
+                    //            newPartnerPointHistoryLv2.status = 4;
+                    //            newPartnerPointHistoryLv2.trans_date = DateTime.Now;
+                    //            newPartnerPointHistoryLv2.point_type = "WAITING";
+                    //            _context.PartnerPointHistorys.Add(newPartnerPointHistoryLv2);
+                    //        }
+
+                    //        _context.SaveChanges();
+
+                    //        pointSystemAffiliate -= pointAffiliateLv2;
+
+                    //    }
+
+                    //    if (pointAffiliateLv3 >= 0 && userLv1.share_person_id != null)
+                    //    {
+                    //        var userLv3 = _context.Users.Where(x => x.id == userLv1.share_person_id).FirstOrDefault();
+
+                    //        if (userLv3 != null && userLv3.is_delete == false && userLv3.status == 1)
+                    //        {
+                    //            usernameLv3 = userLv3.username;
+                    //            userLv3.point_affiliate += pointAffiliateLv2;
+                    //            userLv3.total_point = userLv3.point_affiliate + userLv3.point_avaiable + userLv3.point_waiting;
+                    //            if (userLv3.is_customer == true)
+                    //            {
+                    //                var newCustomerPointHistoryLv3 = new CustomerPointHistory();
+                    //                newCustomerPointHistoryLv3.id = Guid.NewGuid();
+                    //                newCustomerPointHistoryLv3.order_type = "AFF_LV_3";
+                    //                newCustomerPointHistoryLv3.customer_id = userLv3.customer_id;
+                    //                newCustomerPointHistoryLv3.source_id = request.customer_id;
+                    //                newCustomerPointHistoryLv3.point_amount = pointAffiliateLv3;
+                    //                newCustomerPointHistoryLv3.status = 4;
+                    //                newCustomerPointHistoryLv3.trans_date = DateTime.Now;
+                    //                newCustomerPointHistoryLv3.point_type = "WAITING";
+                    //                _context.CustomerPointHistorys.Add(newCustomerPointHistoryLv3);
+                    //            }
+                    //            else if (userLv3.is_partner == true)
+                    //            {
+                    //                var newPartnerPointHistoryLv3 = new PartnerPointHistory();
+                    //                newPartnerPointHistoryLv3.id = Guid.NewGuid();
+                    //                newPartnerPointHistoryLv3.order_type = "AFF_LV_3";
+                    //                newPartnerPointHistoryLv3.partner_id = userLv3.partner_id;
+                    //                newPartnerPointHistoryLv3.source_id = request.customer_id;
+                    //                newPartnerPointHistoryLv3.point_amount = pointAffiliateLv3;
+                    //                newPartnerPointHistoryLv3.status = 4;
+                    //                newPartnerPointHistoryLv3.trans_date = DateTime.Now;
+                    //                newPartnerPointHistoryLv3.point_type = "WAITING";
+                    //                _context.PartnerPointHistorys.Add(newPartnerPointHistoryLv3);
+                    //            }
+
+                    //            _context.SaveChanges();
+                    //            pointSystemAffiliate -= pointAffiliateLv3;
+                    //        }
+                    //    }
+                    //}
+                }
+
+                // Nếu thừa điểm các cấp thì cộng điểm vào hệ thống
+                //if (pointSystemAffiliate > 0)
+                //{
+                //    var newSystemPointHistoryAff = new SystemPointHistory();
+                //    newSystemPointHistoryAff.id = Guid.NewGuid();
+                //    newSystemPointHistoryAff.order_type = "AFFILIATE";
+                //    newSystemPointHistoryAff.point_amount = pointSystemAffiliate;
+                //    newSystemPointHistoryAff.status = 4;
+                //    newSystemPointHistoryAff.trans_date = DateTime.Now;
+                //    newSystemPointHistoryAff.point_type = "WAITING";
+
+                //    _context.SystemPointHistorys.Add(newSystemPointHistoryAff);
+
+                //    _context.SaveChanges();
+                //}
+
+                // Cộng điểm hệ thống
+                decimal pointSystem = Math.Round(total_point * systemExchange / 100);
+                var newSystemPointHistory = new SystemPointHistory();
+                newSystemPointHistory.id = Guid.NewGuid();
+                newSystemPointHistory.order_type = "PUSH";
+                newSystemPointHistory.point_amount = pointSystem;
+                newSystemPointHistory.status = 4;
+                newSystemPointHistory.trans_date = DateTime.Now;
+
+                if (isDebit == true)
+                {
+                    newSystemPointHistory.point_type = "WAITING";
+                }
+                else
+                {
+                    newSystemPointHistory.point_type = "AVAIABLE";
+                }
+
+                _context.SystemPointHistorys.Add(newSystemPointHistory);
+
+                _context.SaveChanges();
+
+
+                // Lưu thông tin điểm hóa đơn
+                request.status = 5;
+                request.discount_rate = contractObj.discount_rate;
+                request.point_exchange = total_point;
+                if (isDebit == true)
+                {
+                    request.point_waiting = total_point;
+                    request.point_avaiable = 0;
+                }
+                else
+                {
+                    request.point_avaiable = total_point;
+                    request.point_waiting = 0;
+                }
+                request.point_partner = total_point;
+                request.point_customer = pointCustomer;
+                request.point_system = pointSystem + pointSystemAffiliate;
+                request.approve_user = username;
+                request.user_updated = username;
+                request.approve_date = DateTime.Now;
+                request.date_updated = DateTime.Now;
+                _context.SaveChanges();
+
+                // Tạo detail
+                for (int i = 0; i < listAccuDetails.Count; i++)
+                {
+                    var newDetail = new AccumulatePointOrderDetail();
+                    newDetail.id = Guid.NewGuid();
+                    newDetail.accumulate_point_order_id = request.id;
+                    newDetail.name = listAccuDetails[i].name;
+                    newDetail.discount_rate = listAccuDetails[i].discount_rate;
+                    newDetail.allocation_name = listAccuDetails[i].allocation_name;
+                    if (listAccuDetails[i].name == "Khách hàng")
+                    {
+                        newDetail.point_value = pointCustomer;
+                    }
+                    else if (listAccuDetails[i].name == "Hệ thống")
+                    {
+                        newDetail.point_value = pointSystem;
+                    }
+                    else if (listAccuDetails[i].name == "Affiliate")
+                    {
+                        newDetail.point_value = pointAffiliate;
+                    }
+
+                    _context.AccumulatePointOrderDetails.Add(newDetail);
+                }
+
+                _context.SaveChanges();
+
+                // Tạo affiliate
+                for (int i = 0; i < listAffiDetails.Count; i++)
+                {
+                    var newAffi = new AccumulatePointOrderAffiliate();
+                    newAffi.id = Guid.NewGuid();
+                    newAffi.accumulate_point_order_id = request.id;
+                    newAffi.username = listAccuDetails[i].name;
+                    newAffi.discount_rate = listAccuDetails[i].discount_rate;
+                    newAffi.date_created = DateTime.Now;
+                    newAffi.levels = listAffiDetails[i].levels;
+                    if (listAffiDetails[i].levels == 1)
+                    {
+                        newAffi.username = usernameLv1.Length > 0 ? usernameLv1 : "Hệ thống";
+                        newAffi.point_value = pointAffiliateLv1;
+                    }
+                    else if (listAffiDetails[i].levels == 2)
+                    {
+                        newAffi.username = usernameLv2.Length > 0 ? usernameLv2 : "Hệ thống";
+                        newAffi.point_value = pointAffiliateLv2;
+                    }
+                    else if (listAffiDetails[i].levels == 3)
+                    {
+                        newAffi.username = usernameLv3.Length > 0 ? usernameLv3 : "Hệ thống";
+                        newAffi.point_value = pointAffiliateLv3;
+                    }
+
+                    _context.AccumulatePointOrderAffiliates.Add(newAffi);
+                }
+
+                _context.SaveChanges();
+            }
+            catch (Exception ex)
+            {
+                transaction.Rollback();
+                transaction.Dispose();
+                return new APIResponse("ERROR_ADD_FAIL");
+            }
+
+            transaction.Commit();
+            transaction.Dispose();
+            return new APIResponse(200);
+        }
+
+        public APIResponse create(AccumulatePointOrderRequest request, string username)
+        {
+
+            var dateNow = DateTime.Now;
+
+            if (request.customer_id == null)
+            {
+                return new APIResponse("ERROR_CUSTOMER_ID_MISSING");
+            }
+
+            if (request.partner_id == null)
+            {
+                return new APIResponse("ERROR_PARTNER_ID_MISSING");
+            }
+
+            if (request.bill_amount == null)
+            {
+                return new APIResponse("ERROR_BILL_AMOUNT_MISSING");
+            }
+
+            var partnerObj = _context.Partners.Where(x => x.id == request.partner_id).FirstOrDefault();
+
+            if (partnerObj == null)
+            {
+                return new APIResponse("ERROR_PARTNER_ID_NOT_EXISTS");
+            }
+
+            if (partnerObj.status != 1)
+            {
+                return new APIResponse("ERROR_PARTNER_ID_NOT_AVAIABLE");
+            }
+
+            var userPartner = _context.Users.Where(x => x.is_partner == true && x.is_partner_admin == true && x.partner_id == request.partner_id).FirstOrDefault();
+
+            if (userPartner == null)
+            {
+                return new APIResponse("ERROR_USER_PARTNER_NOT_EXISTS");
+            }
+
+            var contractObj = _context.PartnerContracts.Where(x => x.status == 12 && x.from_date <= dateNow && x.to_date >= dateNow && x.partner_id == request.partner_id).FirstOrDefault();
+            if (contractObj == null)
+            {
+                return new APIResponse("ERROR_CONTRACT_NOT_EXISTS");
+            }
+
+            var settingObj = _context.Settingses.FirstOrDefault();
+
+            if (settingObj == null || settingObj.point_exchange == null || settingObj.point_value == null)
+            {
+                return new APIResponse("ERROR_SETTINGS_NOT_CONFIG");
+            }
+
+            var customerObj = _context.Customers.Where(x => x.id == request.customer_id).FirstOrDefault();
+            if (customerObj == null)
+            {
+                return new APIResponse("ERROR_CUSTOMER_NOT_EXISTS");
+            }
+
+            var userCustomer = _context.Users.Where(x => x.is_customer == true && x.customer_id == request.customer_id).FirstOrDefault();
+            if (userCustomer == null)
+            {
+                return new APIResponse("ERROR_USER_CUSTOMER_NOT_EXISTS");
+            }
+
+            decimal pointExchangeRate = Math.Round(((decimal)settingObj.point_exchange / (decimal)settingObj.point_value), 2);
+            decimal customerExchange = 0;
+            decimal affiliateExchange = 0;
+            decimal systemExchange = 0;
+            // Lấy cấu hình đổi điểm hiệu lực
+            var accumulateConfig = _context.AccumulatePointConfigs.Where(x => x.code == null && x.from_date <= dateNow && x.to_date >= dateNow && x.partner_id == request.partner_id && x.active == true).FirstOrDefault();
+
+            // Nếu không có riêng thì lấy chung
+            if (accumulateConfig == null)
+            {
+                accumulateConfig = _context.AccumulatePointConfigs.Where(x => x.code == "GENERAL").FirstOrDefault();
+            }
+
+            if (accumulateConfig == null)
+            {
+                return new APIResponse("ERROR_ACCUMULATE_CONFIG_NOT_SETTING");
+            }
+
+            var listAccuDetails = _context.AccumulatePointConfigDetails.Where(x => x.accumulate_point_config_id == accumulateConfig.id).ToList();
+
+            if (listAccuDetails.Count == 0)
+            {
+                return new APIResponse("ERROR_ACCUMULATE_CONFIG_NOT_SETTING");
+            }
+
+            for (int i = 0; i < listAccuDetails.Count; i++)
+            {
+                if (listAccuDetails[i].allocation_name == "Khách hàng")
+                {
+                    customerExchange = (decimal)listAccuDetails[i].discount_rate;
+                }
+                else if (listAccuDetails[i].allocation_name == "Affiliate")
+                {
+                    affiliateExchange = (decimal)listAccuDetails[i].discount_rate;
+                }
+                else if (listAccuDetails[i].allocation_name == "Hệ thống")
+                {
+                    systemExchange = (decimal)listAccuDetails[i].discount_rate;
+                }
+            }
+
+            // Lấy cấu hình affiliate hiệu lực
+            var affiliateConfig = _context.AffiliateConfigs.Where(x => x.code == null && x.from_date <= dateNow && x.to_date >= dateNow && x.service_type_id == partnerObj.service_type_id && x.active == true).FirstOrDefault();
+
+            // Nếu không có riêng thì lấy chung
+            if (affiliateConfig == null)
+            {
+                affiliateConfig = _context.AffiliateConfigs.Where(x => x.code == "GENERAL").FirstOrDefault();
+            }
+
+            if (affiliateConfig == null)
+            {
+                return new APIResponse("ERROR_AFFILIATE_CONFIG_NOT_SETTING");
+            }
+
+            var listAffiDetails = _context.AffiliateConfigDetails.Where(x => x.affiliate_config_id == affiliateConfig.id).ToList();
+
+            if (listAffiDetails.Count == 0)
+            {
+                return new APIResponse("ERROR_AFFILIATE_CONFIG_NOT_SETTING");
+            }
+
+            decimal affliateLv1 = 0;
+            decimal affliateLv2 = 0;
+            decimal affliateLv3 = 0;
+            for (int i = 0; i < listAffiDetails.Count; i++)
+            {
+                if (listAffiDetails[i].levels == 1)
+                {
+                    affliateLv1 = (decimal)listAffiDetails[i].discount_rate;
+                }
+                else if (listAffiDetails[i].levels == 2)
+                {
+                    affliateLv2 = (decimal)listAffiDetails[i].discount_rate;
+                }
+                else if (listAffiDetails[i].levels == 3)
+                {
+                    affliateLv3 = (decimal)listAffiDetails[i].discount_rate;
+                }
+            }
+
+            decimal total_point = Math.Round((decimal)request.bill_amount * (decimal)contractObj.discount_rate * pointExchangeRate / 100);
+
+            bool isDebit = false;
+
+            // Khóa tài khoản khi không đủ điểm tích cho khách hàng, vượt quả mức cảnh báo
+            if (userPartner.point_avaiable < total_point)
+            {
+                if ((total_point - userPartner.point_avaiable) >= contractObj.warning_estimate)
+                {
+                    partnerObj.status = 2;
+                    userPartner.status = 2;
+                    _context.SaveChanges();
+                    return new APIResponse("ERROR_PARTNER_POINT_NOT_ENOUGH");
+                }
+
+                isDebit = true;
+            }
+
+            var transaction = _context.Database.BeginTransaction();
+
+            var data = new AccumulatePointOrder();
+            Guid orderId = Guid.NewGuid();
+            try
+            {
+
+                // Trừ điểm cửa hàng
+                userPartner.point_avaiable = userPartner.point_avaiable - total_point;
+                userPartner.total_point = userPartner.point_avaiable + userPartner.point_waiting + userPartner.point_affiliate;
+                _context.SaveChanges();
+
+                var newPartnerPointHistory = new PartnerPointHistory();
+                newPartnerPointHistory.id = Guid.NewGuid();
+                newPartnerPointHistory.order_type = "PULL";
+                newPartnerPointHistory.partner_id = request.partner_id;
+                newPartnerPointHistory.point_amount = total_point;
+                newPartnerPointHistory.status = 4;
+                newPartnerPointHistory.trans_date = DateTime.Now;
+                if (isDebit == true)
+                {
+                    newPartnerPointHistory.point_type = "WAITING";
+                }
+                else
+                {
+                    newPartnerPointHistory.point_type = "AVAIABLE";
+                }
+                _context.PartnerPointHistorys.Add(newPartnerPointHistory);
+                _context.SaveChanges();
+
+
+                // Cộng điểm khách hàng
+                decimal pointCustomer = Math.Round(total_point * customerExchange / 100);
+                var newCustomerPointHistory = new CustomerPointHistory();
+                newCustomerPointHistory.id = Guid.NewGuid();
+                newCustomerPointHistory.order_type = "PUSH";
+                newCustomerPointHistory.customer_id = request.customer_id;
+                newCustomerPointHistory.point_amount = pointCustomer;
+                newCustomerPointHistory.status = 4;
+                newCustomerPointHistory.trans_date = DateTime.Now;
+
+                if (isDebit == true)
+                {
+                    userCustomer.point_waiting += pointCustomer;
+                    newCustomerPointHistory.point_type = "WAITING";
+                }
+                else
+                {
+                    userCustomer.point_avaiable += pointCustomer;
+                    newCustomerPointHistory.point_type = "AVAIABLE";
+                }
+                _context.CustomerPointHistorys.Add(newCustomerPointHistory);
+
+                userCustomer.total_point = userCustomer.point_affiliate + userCustomer.point_avaiable + userCustomer.point_waiting;
+                _context.SaveChanges();
+
+                // Xử lý điểm Affiliate
+                decimal pointAffiliate = Math.Round(total_point * affiliateExchange / 100);
+                decimal pointAffiliateLv1 = Math.Round(pointAffiliate * affliateLv1 / 100);
+                decimal pointAffiliateLv2 = Math.Round(pointAffiliate * affliateLv2 / 100);
+                decimal pointAffiliateLv3 = Math.Round(pointAffiliate * affliateLv3 / 100);
+                string usernameLv1 = "";
+                string usernameLv2 = "";
+                string usernameLv3 = "";
+                decimal pointSystemAffiliate = pointAffiliate;
+                // Level 1
+                if (pointAffiliateLv1 >= 0 && userCustomer.share_person_id != null)
+                {
+                    var userLv1 = _context.Users.Where(x => x.id == userCustomer.share_person_id).FirstOrDefault();
+
+                    if (userLv1 != null && userLv1.is_delete == false && userLv1.status == 1)
+                    {
+                        usernameLv1 = userLv1.username;
+                        userLv1.point_affiliate += pointAffiliateLv1;
+                        userLv1.total_point = userLv1.point_affiliate + userLv1.point_avaiable + userLv1.point_waiting;
+
+                        if (userLv1.is_customer == true)
+                        {
+                            var newCustomerPointHistoryLv1 = new CustomerPointHistory();
+                            newCustomerPointHistoryLv1.id = Guid.NewGuid();
+                            newCustomerPointHistoryLv1.order_type = "AFF_LV_1";
+                            newCustomerPointHistoryLv1.customer_id = userLv1.customer_id;
+                            newCustomerPointHistoryLv1.source_id = request.customer_id;
+                            newCustomerPointHistoryLv1.point_amount = pointAffiliateLv1;
+                            newCustomerPointHistoryLv1.status = 4;
+                            newCustomerPointHistoryLv1.trans_date = DateTime.Now;
+                            newCustomerPointHistoryLv1.point_type = "WAITING";
+                            _context.CustomerPointHistorys.Add(newCustomerPointHistoryLv1);
+                        }
+                        else if (userLv1.is_partner == true)
+                        {
+                            var newPartnerPointHistoryLv1 = new PartnerPointHistory();
+                            newPartnerPointHistoryLv1.id = Guid.NewGuid();
+                            newPartnerPointHistoryLv1.order_type = "AFF_LV_1";
+                            newPartnerPointHistoryLv1.partner_id = userLv1.partner_id;
+                            newPartnerPointHistoryLv1.source_id = request.customer_id;
+                            newPartnerPointHistoryLv1.point_amount = pointAffiliateLv1;
+                            newPartnerPointHistoryLv1.status = 4;
+                            newPartnerPointHistoryLv1.trans_date = DateTime.Now;
+                            newPartnerPointHistoryLv1.point_type = "WAITING";
+                            _context.PartnerPointHistorys.Add(newPartnerPointHistoryLv1);
+                        }
+                        _context.SaveChanges();
+
+                        pointSystemAffiliate -= pointAffiliateLv1;
+                    }
+
+                    if (pointAffiliateLv2 >= 0 && userLv1.share_person_id != null)
+                    {
+                        var userLv2 = _context.Users.Where(x => x.id == userLv1.share_person_id).FirstOrDefault();
+
+                        if (userLv2 != null && userLv2.is_delete == false && userLv2.status == 1)
+                        {
+                            usernameLv2 = userLv2.username;
+                            userLv2.point_affiliate += pointAffiliateLv2;
+                            userLv2.total_point = userLv2.point_affiliate + userLv2.point_avaiable + userLv2.point_waiting;
+
+                            if (userLv2.is_customer == true)
+                            {
+                                var newCustomerPointHistoryLv2 = new CustomerPointHistory();
+                                newCustomerPointHistoryLv2.id = Guid.NewGuid();
+                                newCustomerPointHistoryLv2.order_type = "AFF_LV_2";
+                                newCustomerPointHistoryLv2.customer_id = userLv2.customer_id;
+                                newCustomerPointHistoryLv2.source_id = request.customer_id;
+                                newCustomerPointHistoryLv2.point_amount = pointAffiliateLv2;
+                                newCustomerPointHistoryLv2.status = 4;
+                                newCustomerPointHistoryLv2.trans_date = DateTime.Now;
+                                newCustomerPointHistoryLv2.point_type = "WAITING";
+                                _context.CustomerPointHistorys.Add(newCustomerPointHistoryLv2);
+                            }
+                            else if (userLv2.is_partner == true)
+                            {
+                                var newPartnerPointHistoryLv2 = new PartnerPointHistory();
+                                newPartnerPointHistoryLv2.id = Guid.NewGuid();
+                                newPartnerPointHistoryLv2.order_type = "AFF_LV_2";
+                                newPartnerPointHistoryLv2.partner_id = userLv2.partner_id;
+                                newPartnerPointHistoryLv2.source_id = request.customer_id;
+                                newPartnerPointHistoryLv2.point_amount = pointAffiliateLv2;
+                                newPartnerPointHistoryLv2.status = 4;
+                                newPartnerPointHistoryLv2.trans_date = DateTime.Now;
+                                newPartnerPointHistoryLv2.point_type = "WAITING";
+                                _context.PartnerPointHistorys.Add(newPartnerPointHistoryLv2);
+                            }
+
+                            _context.SaveChanges();
+
+                            pointSystemAffiliate -= pointAffiliateLv2;
+
+                        }
+
+                        if (pointAffiliateLv3 >= 0 && userLv1.share_person_id != null)
+                        {
+                            var userLv3 = _context.Users.Where(x => x.id == userLv1.share_person_id).FirstOrDefault();
+
+                            if (userLv3 != null && userLv3.is_delete == false && userLv3.status == 1)
+                            {
+                                usernameLv3 = userLv3.username;
+                                userLv3.point_affiliate += pointAffiliateLv2;
+                                userLv3.total_point = userLv3.point_affiliate + userLv3.point_avaiable + userLv3.point_waiting;
+                                if (userLv3.is_customer == true)
+                                {
+                                    var newCustomerPointHistoryLv3 = new CustomerPointHistory();
+                                    newCustomerPointHistoryLv3.id = Guid.NewGuid();
+                                    newCustomerPointHistoryLv3.order_type = "AFF_LV_3";
+                                    newCustomerPointHistoryLv3.customer_id = userLv3.customer_id;
+                                    newCustomerPointHistoryLv3.source_id = request.customer_id;
+                                    newCustomerPointHistoryLv3.point_amount = pointAffiliateLv3;
+                                    newCustomerPointHistoryLv3.status = 4;
+                                    newCustomerPointHistoryLv3.trans_date = DateTime.Now;
+                                    newCustomerPointHistoryLv3.point_type = "WAITING";
+                                    _context.CustomerPointHistorys.Add(newCustomerPointHistoryLv3);
+                                }
+                                else if (userLv3.is_partner == true)
+                                {
+                                    var newPartnerPointHistoryLv3 = new PartnerPointHistory();
+                                    newPartnerPointHistoryLv3.id = Guid.NewGuid();
+                                    newPartnerPointHistoryLv3.order_type = "AFF_LV_3";
+                                    newPartnerPointHistoryLv3.partner_id = userLv3.partner_id;
+                                    newPartnerPointHistoryLv3.source_id = request.customer_id;
+                                    newPartnerPointHistoryLv3.point_amount = pointAffiliateLv3;
+                                    newPartnerPointHistoryLv3.status = 4;
+                                    newPartnerPointHistoryLv3.trans_date = DateTime.Now;
+                                    newPartnerPointHistoryLv3.point_type = "WAITING";
+                                    _context.PartnerPointHistorys.Add(newPartnerPointHistoryLv3);
+                                }
+
+                                _context.SaveChanges();
+                                pointSystemAffiliate -= pointAffiliateLv3;
+                            }
+                        }
+                    }
+                }
+
+                // Nếu thừa điểm các cấp thì cộng điểm vào hệ thống
+                if (pointSystemAffiliate > 0)
+                {
+                    var newSystemPointHistoryAff = new SystemPointHistory();
+                    newSystemPointHistoryAff.id = Guid.NewGuid();
+                    newSystemPointHistoryAff.order_type = "AFFILIATE";
+                    newSystemPointHistoryAff.point_amount = pointSystemAffiliate;
+                    newSystemPointHistoryAff.status = 4;
+                    newSystemPointHistoryAff.trans_date = DateTime.Now;
+                    newSystemPointHistoryAff.point_type = "WAITING";
+
+                    _context.SystemPointHistorys.Add(newSystemPointHistoryAff);
+
+                    _context.SaveChanges();
+                }
+
+                // Cộng điểm hệ thống
+                decimal pointSystem = Math.Round(total_point * systemExchange / 100);
+                var newSystemPointHistory = new SystemPointHistory();
+                newSystemPointHistory.id = Guid.NewGuid();
+                newSystemPointHistory.order_type = "PUSH";
+                newSystemPointHistory.point_amount = pointSystem;
+                newSystemPointHistory.status = 4;
+                newSystemPointHistory.trans_date = DateTime.Now;
+
+                if (isDebit == true)
+                {
+                    newSystemPointHistory.point_type = "WAITING";
+                }
+                else
+                {
+                    newSystemPointHistory.point_type = "AVAIABLE";
+                }
+
+                _context.SystemPointHistorys.Add(newSystemPointHistory);
+
+                _context.SaveChanges();
+
+                // Tạo hóa đơn tích điểm
+                var maxCodeObject = _context.AccumulatePointOrders.Where(x => x.trans_no != null && x.trans_no.Contains("TD")).OrderByDescending(x => x.trans_no).FirstOrDefault();
+                string codeOrder = "";
+                if (maxCodeObject == null)
+                {
+                    codeOrder = "TD0000000000001";
+                }
+                else
+                {
+                    string maxCode = maxCodeObject.trans_no;
+                    maxCode = maxCode.Substring(2);
+                    int orders = int.Parse(maxCode);
+                    orders = orders + 1;
+                    string orderString = orders.ToString();
+                    char pad = '0';
+                    int number = 13;
+                    codeOrder = "TD" + orderString.PadLeft(number, pad);
+                }
+
+                data.id = orderId;
+                data.customer_id = request.customer_id;
+                data.partner_id = request.partner_id;
+                data.trans_no = codeOrder;
+                data.description = request.description;
+                data.bill_amount = request.bill_amount;
+                data.point_exchange = total_point;
+                if (isDebit == true)
+                {
+                    data.point_waiting = total_point;
+                    data.point_avaiable = 0;
+                }
+                else
+                {
+                    data.point_avaiable = total_point;
+                    data.point_waiting = 0;
+                }
+                data.description = request.description;
+                data.status = 5;
+                data.point_partner = total_point;
+                data.discount_rate = contractObj.discount_rate;
+                data.point_customer = pointCustomer;
+                data.point_system = pointSystem + pointSystemAffiliate;
+                data.address = partnerObj.address;
+                data.approve_user = username;
+                data.user_updated = username;
+                data.approve_date = DateTime.Now;
+                data.date_updated = DateTime.Now;
+                data.user_created = username;
+                data.date_created = DateTime.Now;
+                _context.AccumulatePointOrders.Add(data);
+                _context.SaveChanges();
+
+                // Tạo detail
+                for (int i = 0; i < listAccuDetails.Count; i++)
+                {
+                    var newDetail = new AccumulatePointOrderDetail();
+                    newDetail.id = Guid.NewGuid();
+                    newDetail.accumulate_point_order_id = orderId;
+                    newDetail.name = listAccuDetails[i].name;
+                    newDetail.discount_rate = listAccuDetails[i].discount_rate;
+                    newDetail.allocation_name = listAccuDetails[i].allocation_name;
+                    if (listAccuDetails[i].name == "Khách hàng")
+                    {
+                        newDetail.point_value = pointCustomer;
+                    }
+                    else if (listAccuDetails[i].name == "Hệ thống")
+                    {
+                        newDetail.point_value = pointSystem;
+                    }
+                    else if (listAccuDetails[i].name == "Affiliate")
+                    {
+                        newDetail.point_value = pointAffiliate;
+                    }
+
+                    _context.AccumulatePointOrderDetails.Add(newDetail);
+                }
+
+                _context.SaveChanges();
+
+                // Tạo affiliate
+                for (int i = 0; i < listAffiDetails.Count; i++)
+                {
+                    var newAffi = new AccumulatePointOrderAffiliate();
+                    newAffi.id = Guid.NewGuid();
+                    newAffi.accumulate_point_order_id = orderId;
+                    newAffi.username = listAccuDetails[i].name;
+                    newAffi.discount_rate = listAccuDetails[i].discount_rate;
+                    newAffi.date_created = DateTime.Now;
+                    newAffi.levels = listAffiDetails[i].levels;
+                    if (listAffiDetails[i].levels == 1)
+                    {
+                        newAffi.username = usernameLv1.Length > 0 ? usernameLv1 : "Hệ thống";
+                        newAffi.point_value = pointAffiliateLv1;
+                    }
+                    else if (listAffiDetails[i].levels == 2)
+                    {
+                        newAffi.username = usernameLv2.Length > 0 ? usernameLv2 : "Hệ thống";
+                        newAffi.point_value = pointAffiliateLv2;
+                    }
+                    else if (listAffiDetails[i].levels == 3)
+                    {
+                        newAffi.username = usernameLv3.Length > 0 ? usernameLv3 : "Hệ thống";
+                        newAffi.point_value = pointAffiliateLv3;
+                    }
+
+                    _context.AccumulatePointOrderAffiliates.Add(newAffi);
+                }
+
+                _context.SaveChanges();
+            }
+            catch (Exception ex)
+            {
+                transaction.Rollback();
+                transaction.Dispose();
+                return new APIResponse(ex.InnerException + "-" + ex.Message);
+            }
+
+            transaction.Commit();
+            transaction.Dispose();
+            return new APIResponse(data);
+        }
+    }
+}
