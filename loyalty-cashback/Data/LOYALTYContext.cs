@@ -105,7 +105,7 @@ namespace LOYALTY.Data
 
         //SMSHistory
         public DbSet<SMSHistory> SMSHistories { get; set; }
-        public DbSet<invoice> Invoices { get; set; }
+        public DbSet<Invoice> Invoices { get; set; }
         public DbSet<PartnerTable> PartnerTables { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -196,7 +196,7 @@ namespace LOYALTY.Data
             modelBuilder.Entity<ScheduleJobs>().ToTable("ScheduleJobs").HasKey(v => v.id);
 
             modelBuilder.Entity<SMSHistory>().ToTable("SMSHistory").HasKey(v => v.id);
-            modelBuilder.Entity<invoice>().ToTable("invoice").HasKey(v => v.id);
+            modelBuilder.Entity<Invoice>().ToTable("invoice").HasKey(v => v.id);
             modelBuilder.Entity<PartnerTable>().ToTable("PartnerTable").HasKey(v => v.id);
         }
     }

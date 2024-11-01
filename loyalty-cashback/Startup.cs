@@ -21,6 +21,11 @@ using System.Net.Http;
 using Microsoft.OpenApi.Models;
 using LOYALTY.PaymentGate.Interface;
 using LOYALTY.Services;
+using System.Reflection;
+using FluentValidation.AspNetCore;
+using FluentValidation;
+using Pig.AspNetCore.Application.Attributes;
+using LOYALTY.Attribute;
 
 namespace LOYALTY
 {
@@ -232,6 +237,14 @@ namespace LOYALTY
 
             //SMSBrandName
             services.AddTransient<ISendSMSBrandName, SendSMSBrandName>();
+
+            services.AddAutoMapper(Assembly.GetExecutingAssembly());
+            services.AddControllers(option =>
+            {
+                option.Filters.Add(typeof(CustomFluentValidationAttribute));
+            });
+            services.AddFluentValidationAutoValidation();
+            services.AddValidatorsFromAssembly(Assembly.GetExecutingAssembly());
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
